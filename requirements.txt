@@ -1,0 +1,2 @@
+colorlog==4.2.1
+logger==1.4
