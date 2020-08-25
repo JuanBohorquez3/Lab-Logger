@@ -9,6 +9,8 @@ import colorlog
 from inspect import signature
 
 # local imports
+from logger_setup import setup_child_logger
+from instruments import Instrument
 
 
 class Field:
@@ -22,7 +24,7 @@ class Field:
         self.__address = str(address)
         self.__unit = str(unit)
 
-        self.logger = logging.getLogger(str(self))
+        self.logger = setup_child_logger(self.name)
 
         # Buncha warnings and typing errors
         if not isinstance(name, str):
@@ -82,34 +84,6 @@ class Field:
         """
         return self.__conversion.__doc__
 
-    @staticmethod
-    def setup_logger(name: str, level: int) -> logging.Logger:
-        """
-        Sets up a logger to be used in this module
-        Args:
-            name - name to be used to reference the logger
-            level - logging level to use. Typical options are:
-                logging.DEBUG
-                logging.INFO
-                logging.WARNING
-                logging.ERROR
-                logging.CRITICAL
-        Returns:
-            logger that was created
-        """
-        logger = logging.getLogger(name)
-        # Build a handler
-        handler = colorlog.StreamHandler()
-        handler.setLevel(level)
-        # Use the same formatter used by our root handler
-        root_logger = logging.getLogger()
-        formatter = root_logger.handlers[0].formatter
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        
-        return logger
-
-
     def __str__(self):
         return f"{self.__class__.__name__} : {self.name}"
 
@@ -118,32 +92,43 @@ class Stream:
     """
     Attributes:
         stream_name : Name of data stream in origin server this channel will manage. Must be
-            formatted:
-            {NAMESPACE}_{descriptive string}
-        data_type : string describing type of data being sent to the server. eg. float, or bool
+            formatted as {NAMESPACE}_{descriptive string}
+        fields : dictionary of field names to Field objects
+        data_type : type of data being sent to the server. eg. float, or bool
         server : origin.server object. Interfaces with the origin server
-        data_map : mapping of field names to physical channels on our measurement device
-        device : Monitor object communicating with our physical measurement device
+        instrument : Instrument object communicating with our physical measurement device
     """
     TIMEOUT = 60*1000  # server timeout time in ms
     NAMESPACE = "Hybrid"  # TODO : configure this with config file or GUI setting
 
-    def __init__(self, stream_name: str, data_type: str, server: origin.server, data_map: Dict[str: str], device: Monitor):
-        self.logger = logging.getLogger(self.__class__.__name__)  # TODO set up logger
+    def __init__(
+            self,
+            stream_name: str,
+            fields: Dict[str: Field],
+            data_type: type,
+            server: origin.server,
+            instrument: Instrument):
+        # use root logger temporarily
+        self.logger = logging.getLogger(self.__class__.__name__)
         """
         TODO : imports for origin and Monitors
         """
         # TODO : ensure that name is formatted correctly:
         #   {Channel.NAMESPACE}_{descriptive name}
         self.__stream_name = stream_name
-        # TODO : ensure data_type is string corresponding to c types:
-        #   eg 'float' or 'bool'
-        self.__data_type = data_type
-        self.server = server
-        self.data_map = data_map
-        self.device = device
+        setup_child_logger(str(self))
 
-        self.data_names = self.data_map.keys()
+        self.__fields = fields
+
+        if data_type not in [int, float, bool, str]:
+            raise ValueError("data_type must be int, float, bool or str")
+        self.__data_type = data_type
+
+        self.__instrument = instrument
+
+        self.server = server
+
+        self.field_names = self.fields.keys()
         self.records = {}
         self.data = {}
 
@@ -151,11 +136,39 @@ class Stream:
 
     @property
     def stream_name(self):
+        """
+        Returns: name of the stream
+        """
         return self.__stream_name
 
     @property
-    def data_type(self):
+    def data_type(self) -> type:
+        """
+        Returns: Data type being measured
+        """
         return self.__data_type
+
+    @property
+    def serv_data_type(self) -> str:
+        """
+        Returns: string origin library can parse to indicate data type being logged
+        """
+        if self.data_type in [int, float, bool]:
+            return self.data_type.__name__
+        elif self.data_type == str:
+            return "string"
+
+    # some Read Only attributes
+    # TODO : Do they need to be exposed?
+    @property
+    def fields(self) -> Dict[str: Field]:
+        return self.__fields
+
+    @property
+    def instrument(self) -> Instrument:
+        return self.__instrument
+
+    @property
 
     def connect(self):
         """
@@ -179,7 +192,7 @@ class Stream:
         Returns:
             measured data mapping field names to their measured values
         """
-        self.data = self.device.measure(self.stream_name)
+        self.data = self.__instrument.measure(self.stream_name)
         return self.data
 
     def close(self) -> Tuple[int,int]:
@@ -189,5 +202,8 @@ class Stream:
             error codes provided by either the server and device, in that order
         """
         err_serv = self.connection.close()
-        err_dev = self.device.close()
+        err_dev = self.__instrument.close()
         return err_serv, err_dev
+
+    def __str__(self):
+        return f"{self.__class__.__name__} : {self.stream_name}"
